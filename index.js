@@ -5,24 +5,29 @@ ymaps.modules.define('DrawingManager',
     ) {
         let DRAWING_MODE_MARKER = "marker";
         let DRAWING_MODE_CIRCLE = "circle";
+        let DRAWING_MODE_AREA = "area";
 
         var DrawingManager = function (map, opts) {
+            let me = this;
+            me.map = map;
+            me._opts = opts;
+            me._drawingType = opts.drawingMode || DRAWING_MODE_MARKER;
+            me._fitBounds = opts._fitBounds || true;
+            me.markerOptions = opts.markerOptions || {};
+            me.circleOptions = opts.circleOptions || {};
+            me.areaOptions = opts.areaOptions || {};
+            me._enableDraw = opts.enableDraw;
+            me.radius = opts.circleOptions.radius;
 
-            this.map = map;
-            this._opts = opts;
-            this._drawingType = opts.drawingMode || DRAWING_MODE_MARKER;
-            this._fitBounds = opts._fitBounds || true;
-            this.markerOptions = opts.markerOptions || {};
-            this.circleOptions = opts.circleOptions || {};
-            this._enableDraw = opts.enableDraw;
-            this.radius = opts.circleOptions.radius;
-
-
+            me.map.events.add('boundschange', () => {
+                me.map.events.fire('draw:zoom_map', me._getZoom());
+            });
         };
 
         DrawingManager.prototype.setDrawingMode = function (drawingType) {
 
             let me = this;
+
             this._drawingType = drawingType;
 
             switch (drawingType) {
@@ -31,6 +36,12 @@ ymaps.modules.define('DrawingManager',
                     break;
                 case DRAWING_MODE_CIRCLE:
                     me._bindCircle();
+                    break;
+                case DRAWING_MODE_AREA:
+                    me._bindArea();
+                    break;
+                default:
+                    me._redraw();
                     break;
             }
         };
@@ -72,18 +83,14 @@ ymaps.modules.define('DrawingManager',
 
             let me = this;
 
-            if (me._centerMarker) {
-                me.map.geoObjects.removeAll();
-                me._centerMarker = null;
-                me.map.container.events.remove('click');
-            }
+            me._removeArea();
+            me._removeCenterMarker();
+            me._removeCircle();
 
             var createCenterMarker = (e) => {
 
-                if (me._centerMarker) {
-                    me.map.geoObjects.removeAll();
-                    me._centerMarker = null;
-                }
+                me._removeArea();
+                me._removeCenterMarker();
 
                 if (e) {
                     me._setPosition(e);
@@ -107,6 +114,7 @@ ymaps.modules.define('DrawingManager',
 
                     }
 
+
                     me._centerMarker = new ymaps.GeoObject(geo, options);
                     me.map.geoObjects.add(me._centerMarker);
 
@@ -122,13 +130,13 @@ ymaps.modules.define('DrawingManager',
 
             }
 
-            if (!this._enableDraw) {
+            if (!me._enableDraw) {
                 createCenterMarker();
                 me.map.container.events.remove('click');
 
             }
 
-            this.map.container.events.add('click', (event) => {
+            me.map.container.events.add('click', (event) => {
                 event.stopImmediatePropagation();
                 if (this._enableDraw) {
                     createCenterMarker(event)
@@ -141,11 +149,7 @@ ymaps.modules.define('DrawingManager',
 
             let me = this;
 
-            if (me.circle) {
-                me.map.geoObjects.remove(me.circle);
-                me.map.geoObjects.remove(me._vertexMarker);
-                me.map.events.fire('draw:circle_remove', null);
-            }
+            me._removeCircle();
 
             if (me._centerMarker) {
                 const position = [me._centerMarker.geometry.getCoordinates(), me.radius];
@@ -186,6 +190,111 @@ ymaps.modules.define('DrawingManager',
 
         };
 
+        DrawingManager.prototype._bindArea = function () {
+
+            let me = this;
+
+            me._removeArea();
+            me._removeCenterMarker();
+            me._removeCircle();
+
+            var createArea = () => {
+
+                var patch = [];
+                me.area = null;
+
+                me._setDrawing(false);
+
+                let options = {
+                    fillColor: me.areaOptions.fillColor,
+                    fillOpacity: me.areaOptions.fillOpacity,
+                    strokeColor: me.areaOptions.strokeColor,
+                    strokeOpacity: me.areaOptions.strokeOpacity,
+                    strokeWidth: me.areaOptions.strokeWeight,
+                }
+
+                me.area = new ymaps.Polyline([], {}, options);
+
+                me.map.geoObjects.add(me.area);
+
+
+                me.map.container.events.add('mousemove', (event) => {
+
+                    if (typeof event.get('coords') !== "undefined") {
+                        patch.push(event.get('coords'));
+                    }
+
+                    me.area.geometry.setCoordinates(patch);
+
+                });
+
+                me.map.container.events.once('mouseup', () => {
+
+                    me.map.container.events.remove('mousemove');
+                    me.map.container.events.types.mousemove = undefined;
+
+                    me.map.geoObjects.remove(me.area);
+
+                    me._setDrawing(true);
+
+                    me.area = new ymaps.Polygon([patch,], {}, options);
+
+                    me.map.geoObjects.add(me.area);
+
+                    me.map.events.fire('draw:area_create', me._convertCoordinates(patch));
+                    me._fitBoundsArea();
+
+
+                });
+            }
+
+            me.map.container.events.once('mousedown', () => {
+                createArea();
+            });
+        };
+
+        DrawingManager.prototype._redraw = function () {
+            
+            let me = this;
+
+            me._removeArea();
+            me._removeCenterMarker();
+            me._removeCircle();
+        }
+
+        DrawingManager.prototype._setDrawing = function (enabled) {
+
+            let me = this;
+
+            enabled ? me.map.behaviors.get('dblClickZoom').enable() : me.map.behaviors.get('dblClickZoom').disable();
+            enabled ? me.map.behaviors.get('scrollZoom').enable() : me.map.behaviors.get('scrollZoom').disable();
+            enabled ? me.map.behaviors.get('drag').enable() : me.map.behaviors.get('drag').disable();
+        };
+
+        DrawingManager.prototype._fitBoundsArea = function () {
+
+            let me = this;
+
+            if (me.area) {
+                me.map.setBounds(me.area.geometry.getBounds());
+            }
+        };
+
+        DrawingManager.prototype._convertCoordinates = function (coordinates) {
+
+            let positions = [];
+
+            for (var n = 0; n < coordinates.length; n++) {
+                let item = coordinates[n];
+                let position = {
+                    latitude: item[0],
+                    longitude: item[1],
+                }
+                positions.push(position);
+            }
+            return positions;
+        };
+
         DrawingManager.prototype._centerMarkerAddEventListener = function () {
 
             let me = this;
@@ -206,27 +315,23 @@ ymaps.modules.define('DrawingManager',
             })
 
             me._centerMarker.events.add('dragend', () => {
-
                 me.map.events.fire('draw:circle_center_complete', me._getInfo());
 
             });
 
 
             me._centerMarker.events.add('mouseover', () => {
-
                 me.map.events.fire('draw:marker_mouseover', me._getInfo());
 
             });
 
 
             me._centerMarker.events.add('mouseout', () => {
-
                 me.map.events.fire('draw:marker_mouseout', me._getInfo());
 
             });
 
             me._centerMarker.events.add('click', () => {
-
                 me.map.events.fire('draw:marker_click', me._getInfo());
 
             })
@@ -308,9 +413,46 @@ ymaps.modules.define('DrawingManager',
 
                 me.map.events.fire('draw:circle_radius_complete', me._getInfo());
 
-            })
+            });
         };
 
+
+        DrawingManager.prototype._removeCircle = function () {
+
+            let me = this;
+
+            if (me.circle) {
+                me.map.geoObjects.remove(me.circle);
+                me.map.geoObjects.remove(me._vertexMarker);
+                me.circle = null;
+                me._vertexMarker = null;
+                me.map.events.fire('draw:circle_remove', null);
+            }
+        }
+
+        DrawingManager.prototype._removeCenterMarker = function () {
+
+            let me = this;
+
+            if (me._centerMarker) {
+                me.map.geoObjects.remove(me._centerMarker);
+                me._centerMarker = null;
+                me.map.events.fire('draw:marker_remove', null);
+            }
+
+        }
+
+        DrawingManager.prototype._removeArea = function () {
+
+            let me = this;
+
+            if (me.area) {
+                me.map.geoObjects.remove(me.area);
+                me.area = null;
+                me.map.events.fire('draw:area_remove', null);
+            }
+
+        }
 
         DrawingManager.prototype._getInfo = function () {
 
@@ -326,6 +468,16 @@ ymaps.modules.define('DrawingManager',
             };
 
             return info;
+        }
+
+        DrawingManager.prototype._getZoom = function () {
+
+            let me = this;
+
+            let zoom = {
+                zoom: me.map.getZoom()
+            }
+            return zoom;
         }
 
         DrawingManager.prototype.destination = function (latlng, heading, distance) {
